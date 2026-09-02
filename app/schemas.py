@@ -15,6 +15,17 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str    
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str  
+
 
 # ---- Response schemas (data keluar ke client) ----
 

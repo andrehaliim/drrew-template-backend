@@ -1,10 +1,19 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User
-from app.schemas import UserCreate, UserLogin, UserResponse, Token
+from app.models import User, RefreshToken
+from app.schemas import (
+    UserCreate,
+    UserLogin,
+    UserResponse,
+    Token,
+    RefreshTokenRequest,
+    UserUpdate,
+    ChangePasswordRequest,
+)
 from app.auth import (
     hash_password,
     verify_password,
@@ -42,6 +51,23 @@ def get_current_user(
         raise credentials_exception
 
     return user
+
+
+# ---- Helper: buat & simpan sepasang token ----
+
+def issue_tokens(user: User, db: Session) -> Token:
+    access_token = create_access_token(data={"sub": user.email})
+    refresh_token_str, jti, expires_at = create_refresh_token(data={"sub": user.email})
+
+    token_record = RefreshToken(
+        jti=jti,
+        user_id=user.id,
+        expires_at=expires_at,
+    )
+    db.add(token_record)
+    db.commit()
+
+    return Token(access_token=access_token, refresh_token=refresh_token_str)
 
 
 # ---- POST /auth/register ----
@@ -85,22 +111,28 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
             detail="Akun tidak aktif",
         )
 
-    access_token = create_access_token(data={"sub": user.email})
-    refresh_token = create_refresh_token(data={"sub": user.email})
-
-    return Token(access_token=access_token, refresh_token=refresh_token)
+    return issue_tokens(user, db)
 
 
 # ---- POST /auth/refresh ----
 
 @router.post("/refresh", response_model=Token)
-def refresh_token_endpoint(refresh_token: str, db: Session = Depends(get_db)):
-    payload = decode_token(refresh_token)
+def refresh_token_endpoint(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    payload = decode_token(body.refresh_token)
 
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token tidak valid atau kadaluarsa",
+        )
+
+    jti = payload.get("jti")
+    token_record = db.query(RefreshToken).filter(RefreshToken.jti == jti).first()
+
+    if token_record is None or token_record.revoked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token sudah tidak berlaku (logout atau dicabut)",
         )
 
     email = payload.get("sub")
@@ -111,14 +143,84 @@ def refresh_token_endpoint(refresh_token: str, db: Session = Depends(get_db)):
             detail="User tidak ditemukan",
         )
 
-    new_access_token = create_access_token(data={"sub": user.email})
-    new_refresh_token = create_refresh_token(data={"sub": user.email})
+    token_record.revoked = True
+    db.commit()
 
-    return Token(access_token=new_access_token, refresh_token=new_refresh_token)
+    return issue_tokens(user, db)
 
+
+# ---- POST /auth/logout ----
+
+@router.post("/logout", status_code=status.HTTP_200_OK)
+def logout(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    payload = decode_token(body.refresh_token)
+
+    if payload is None or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token tidak valid",
+        )
+
+    jti = payload.get("jti")
+    token_record = db.query(RefreshToken).filter(RefreshToken.jti == jti).first()
+
+    if token_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Token tidak ditemukan",
+        )
+
+    token_record.revoked = True
+    db.commit()
+
+    return {"message": "Logout berhasil"}
+
+# ---- POST /auth/change-password ----
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(body.old_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password lama tidak sesuai",
+        )
+
+    current_user.hashed_password = hash_password(body.new_password)
+
+    # Revoke semua refresh token milik user ini — paksa login ulang di semua device
+    db.query(RefreshToken).filter(
+        RefreshToken.user_id == current_user.id, RefreshToken.revoked == False
+    ).update({"revoked": True})
+
+    db.commit()
+
+    return {"message": "Password berhasil diubah. Silakan login ulang."}
 
 # ---- GET /auth/me (contoh protected endpoint) ----
 
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+# ---- PATCH /auth/me ----
+
+@router.patch("/me", response_model=UserResponse)
+def update_me(
+    body: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    update_data = body.model_dump(exclude_unset=True)
+
+    for field, value in update_data.items():
+        setattr(current_user, field, value)
+
+    db.commit()
+    db.refresh(current_user)
+
     return current_user
