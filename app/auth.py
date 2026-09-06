@@ -5,6 +5,8 @@ from passlib.context import CryptContext
 from dotenv import load_dotenv
 import os
 import uuid
+import random
+import string
 
 load_dotenv()
 
@@ -53,3 +55,18 @@ def decode_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+# ---- OTP functions ----
+OTP_EXPIRE_MINUTES = int(os.getenv("OTP_EXPIRE_MINUTES", 10))
+
+
+def generate_otp_code(length: int = 6) -> str:
+    return "".join(random.choices(string.digits, k=length))
+
+
+def hash_otp(otp_code: str) -> str:
+    return pwd_context.hash(otp_code)
+
+
+def verify_otp(plain_otp: str, hashed_otp: str) -> bool:
+    return pwd_context.verify(plain_otp, hashed_otp)

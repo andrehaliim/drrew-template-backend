@@ -22,6 +22,19 @@ from app.auth import (
     decode_token,
 )
 
+from datetime import datetime, timedelta, timezone
+from app.models import User, RefreshToken, PasswordResetToken
+from app.schemas import (
+    UserCreate, UserLogin, UserResponse, Token, RefreshTokenRequest,
+    UserUpdate, ChangePasswordRequest,
+    ForgotPasswordRequest, ResetPasswordRequest,
+)
+from app.auth import (
+    hash_password, verify_password, create_access_token, create_refresh_token,
+    decode_token, generate_otp_code, hash_otp, verify_otp, OTP_EXPIRE_MINUTES,
+)
+from app.email import send_otp_email
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -199,6 +212,80 @@ def change_password(
     db.commit()
 
     return {"message": "Password berhasil diubah. Silakan login ulang."}
+
+# ---- POST /auth/forgot-password ----
+
+@router.post("/forgot-password", status_code=status.HTTP_200_OK)
+def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+
+    # Selalu balas pesan generik, biar endpoint ini gak bisa dipakai
+    # buat cek "email ini terdaftar apa gak" (enumeration attack).
+    generic_response = {"message": "If that email is registered, a reset code has been sent."}
+
+    if not user:
+        return generic_response
+
+    # Invalidate kode lama yang belum dipakai, biar cuma 1 kode aktif per user
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used == False,
+    ).update({"used": True})
+
+    otp_code = generate_otp_code()
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        otp_hash=hash_otp(otp_code),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRE_MINUTES),
+    )
+    db.add(reset_token)
+    db.commit()
+
+    send_otp_email(user.email, otp_code)
+
+    return generic_response
+
+
+# ---- POST /auth/reset-password ----
+
+@router.post("/reset-password", status_code=status.HTTP_200_OK)
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    invalid_exception = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Kode reset tidak valid atau sudah kadaluarsa",
+    )
+
+    user = db.query(User).filter(User.email == body.email).first()
+    if not user:
+        raise invalid_exception
+
+    token_record = (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used == False,
+        )
+        .order_by(PasswordResetToken.created_at.desc())
+        .first()
+    )
+
+    if token_record is None or token_record.expires_at < datetime.now(timezone.utc):
+        raise invalid_exception
+
+    if not verify_otp(body.otp_code, token_record.otp_hash):
+        raise invalid_exception
+
+    user.hashed_password = hash_password(body.new_password)
+    token_record.used = True
+
+    # Sama kayak change-password: paksa login ulang di semua device
+    db.query(RefreshToken).filter(
+        RefreshToken.user_id == user.id, RefreshToken.revoked == False
+    ).update({"revoked": True})
+
+    db.commit()
+
+    return {"message": "Password berhasil direset. Silakan login."}    
 
 # ---- GET /auth/me (contoh protected endpoint) ----
 
