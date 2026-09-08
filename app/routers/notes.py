@@ -110,4 +110,4 @@ def delete_note(
     db.delete(note)
     db.commit()
 
-    return {"message": "Note berhasil dihapus."}    
+    return {"message": "Note deleted successfully."}    

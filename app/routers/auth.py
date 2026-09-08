@@ -47,7 +47,7 @@ def get_current_user(
 ) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Token tidak valid atau kadaluarsa",
+        detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -91,7 +91,7 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email sudah terdaftar",
+            detail="Email already registered",
         )
 
     new_user = User(
@@ -115,13 +115,13 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
     if not user or not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email atau password salah",
+            detail="Incorrect email or password",
         )
 
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Akun tidak aktif",
+            detail="Inactive account",
         )
 
     return issue_tokens(user, db)
@@ -136,7 +136,7 @@ def refresh_token_endpoint(body: RefreshTokenRequest, db: Session = Depends(get_
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token tidak valid atau kadaluarsa",
+            detail="Invalid or expired refresh token",
         )
 
     jti = payload.get("jti")
@@ -145,7 +145,7 @@ def refresh_token_endpoint(body: RefreshTokenRequest, db: Session = Depends(get_
     if token_record is None or token_record.revoked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token sudah tidak berlaku (logout atau dicabut)",
+            detail="Refresh token is no longer valid (logged out or revoked)",
         )
 
     email = payload.get("sub")
@@ -153,7 +153,7 @@ def refresh_token_endpoint(body: RefreshTokenRequest, db: Session = Depends(get_
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User tidak ditemukan",
+            detail="User not found",
         )
 
     token_record.revoked = True
@@ -171,7 +171,7 @@ def logout(body: RefreshTokenRequest, db: Session = Depends(get_db)):
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token tidak valid",
+            detail="Invalid refresh token",
         )
 
     jti = payload.get("jti")
@@ -180,13 +180,13 @@ def logout(body: RefreshTokenRequest, db: Session = Depends(get_db)):
     if token_record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Token tidak ditemukan",
+            detail="Token not found",
         )
 
     token_record.revoked = True
     db.commit()
 
-    return {"message": "Logout berhasil"}
+    return {"message": "Logout successful"}
 
 # ---- POST /auth/change-password ----
 
@@ -199,7 +199,7 @@ def change_password(
     if not verify_password(body.old_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password lama tidak sesuai",
+            detail="Old password does not match",
         )
 
     current_user.hashed_password = hash_password(body.new_password)
@@ -211,7 +211,7 @@ def change_password(
 
     db.commit()
 
-    return {"message": "Password berhasil diubah. Silakan login ulang."}
+    return {"message": "Password changed successfully. Please login again."}
 
 # ---- POST /auth/forgot-password ----
 
@@ -252,7 +252,7 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
 def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
     invalid_exception = HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Kode reset tidak valid atau sudah kadaluarsa",
+        detail="Invalid or expired reset code",
     )
 
     user = db.query(User).filter(User.email == body.email).first()
@@ -285,7 +285,7 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     db.commit()
 
-    return {"message": "Password berhasil direset. Silakan login."}    
+    return {"message": "Password reset successfully. Please login."}    
 
 # ---- GET /auth/me (contoh protected endpoint) ----
 
